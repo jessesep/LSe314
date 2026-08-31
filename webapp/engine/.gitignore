@@ -1,0 +1,5 @@
+out/
+norm/
+__pycache__/
+r_*.pd
+lse

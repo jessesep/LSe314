@@ -1,0 +1,1355 @@
+<title>LSe 314</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@300;400;500&family=IBM+Plex+Sans:wght@300;600&display=swap">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/p5.js/1.9.4/p5.min.js"></script>
+
+<style>
+/* ===================================================================
+   LSe 314 - light bench
+
+   The instrument is played in the dark and reads light with 32 LDRs.
+   So the page is a dark field with a lattice on it, and every mark is a
+   hairline or a diamond at 0, 45 or 90 degrees. No cards, no fills, no
+   glow, no particles, no persistence buffer (Sep, 2026-08-31).
+
+   Light is shown two ways, both as geometry. ISO-CONTOURS: concentric
+   rotated squares at the radii where the inverse-square falloff crosses a
+   fixed level - the actual physics the patch conditions. And the NETWORK:
+   emitters and readers wired as a fixed octilinear graph whose filaments
+   load with the light arriving at the nodes they join, and stay drawn as
+   dark hairlines when they carry nothing.
+
+   Every ornament on the page is a function of what the sensors are
+   reading THIS FRAME, written once per frame into CSS variables by
+   the draw loop: --lvl (mean gated output), --tr (step transient),
+   --breath (slow idle), --gate (fraction over threshold). Nothing
+   here animates on a timer of its own.
+   =================================================================== */
+
+:root {
+  /* Stage IX neutrals, tinted toward the brand temperature (anti-generic r1) */
+  --gray-1:#0b0a09; --gray-4:#262320; --gray-6:#57524b; --gray-7:#8b8378;
+  --gray-10:#f0ede8;
+  /* ONE accent: the house brand. Hairline and text, never a fill. */
+  --accent:#a39589; --accent-rgb:163,149,137;
+  --brand:#8b7f72;
+  /* emission, not a second accent: what a tungsten LED actually looks like */
+  --warm:#d6aa6e; --warm-rgb:214,170,110;
+  --mono:'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
+  --sans:'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+
+  --cell:32px; --cell5:160px;
+  --edge: calc(var(--cell) * 2 - 22px);
+
+  /* written once a frame by the draw loop */
+  --lvl:0; --tr:0; --breath:0; --gate:0; --press:0; --run:1;
+  --px:0; --py:0;
+
+  --grid-a:.040; --grid5-a:.090;
+  --surround:0,0,0; --surround-a:.55;
+  --scan-a:.10;
+  color-scheme: dark;
+}
+
+* { box-sizing:border-box; }
+
+html, body { height:100%; }
+body {
+  margin:0; background:var(--gray-1); color:var(--gray-10);
+  font-family:var(--mono); overflow:hidden;
+  -webkit-font-smoothing:antialiased;
+}
+
+/* ---- the lattice. Two tiers, 32 and 160, breathing with the field ---- */
+body::before {
+  content:""; position:fixed; inset:-18px; pointer-events:none; z-index:1;
+  will-change:opacity, transform;
+  transform: translate3d(calc(var(--px) * 9px), calc(var(--py) * 9px), 0);
+  background:
+    linear-gradient(rgba(var(--accent-rgb), var(--grid-a)) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--accent-rgb), var(--grid-a)) 1px, transparent 1px),
+    linear-gradient(rgba(var(--accent-rgb), var(--grid5-a)) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--accent-rgb), var(--grid5-a)) 1px, transparent 1px);
+  background-size: var(--cell) var(--cell), var(--cell) var(--cell),
+                   var(--cell5) var(--cell5), var(--cell5) var(--cell5);
+  opacity: calc(0.72 + var(--breath) * 0.20 + var(--lvl) * 1.4 + var(--tr) * 0.35);
+}
+
+/* ---- surround: vignette + scanlines, scaled by the low end ---- */
+body::after {
+  content:""; position:fixed; inset:0; pointer-events:none; z-index:6;
+  background:
+    radial-gradient(130% 96% at 50% 46%, transparent 56%,
+                    rgba(var(--surround), var(--surround-a)) 100%),
+    repeating-linear-gradient(0deg, rgba(var(--surround), var(--scan-a)) 0 1px,
+                              transparent 1px 3px);
+  background-size: 100% 100%, 100% 3px;
+  will-change:opacity;
+  opacity: calc(1 - var(--lvl) * 0.20 + var(--gate) * 0.08);
+}
+
+#stage { position:fixed; inset:0; z-index:2; }
+#stage canvas { display:block; }
+
+/* ---- corner brackets ---- */
+.br { position:fixed; width:var(--cell); height:var(--cell);
+      border:1px solid rgba(var(--accent-rgb), .62); pointer-events:none; z-index:7;
+      will-change:opacity, transform;
+      opacity: calc(0.18 + var(--tr) * 0.55 + var(--breath) * 0.08 + var(--lvl) * 0.35);
+      transform: scale(calc(1 + var(--tr) * 0.06 + var(--lvl) * 0.03));
+      transform-origin:center; }
+.br.tl { left:var(--cell); top:var(--cell); border-right:0; border-bottom:0; }
+.br.tr { right:var(--cell); top:var(--cell); border-left:0; border-bottom:0; }
+.br.bl { left:var(--cell); bottom:var(--cell); border-right:0; border-top:0; }
+.br.br2{ right:var(--cell); bottom:var(--cell); border-left:0; border-top:0; }
+
+/* ---- title ---- */
+#title { position:fixed; left:calc(var(--cell) * 2); top:calc(var(--cell) * 2);
+         z-index:8; display:flex; align-items:center; gap:12px;
+         pointer-events:none; opacity:0; transition:opacity 1.4s ease .4s; }
+#title.on { opacity:1; }
+#title .d { width:10px; height:10px; border:1px solid rgba(var(--accent-rgb), .66);
+            will-change:opacity, transform;
+            transform: rotate(45deg) scale(calc(1 + var(--lvl) * 0.5 + var(--tr) * 0.2));
+            opacity: calc(0.50 + var(--lvl) * 1.1 + var(--tr) * 0.3); }
+#title b { font-family:var(--sans); font-weight:600; font-size:11px; letter-spacing:.34em;
+           text-transform:uppercase; color:var(--gray-10); }
+#title i { font-style:normal; font-size:9px; letter-spacing:.2em;
+           text-transform:uppercase; color:var(--gray-6); }
+
+/* ---- left column: modes, generators, faders ---- */
+#panel { position:fixed; left:calc(var(--cell) * 2); top:calc(var(--cell) * 5);
+         z-index:8; width:calc(var(--cell) * 7);
+         font:10px/1.2 var(--mono); color:var(--gray-10);
+         opacity:0; transition:opacity 1.4s ease .6s; }
+#panel.on { opacity:1; }
+#panel .hd { padding:0 0 7px; letter-spacing:.24em; text-transform:uppercase;
+             font-size:8px; color:var(--gray-7);
+             display:flex; align-items:baseline; gap:9px;
+             border-bottom:1px solid rgba(var(--accent-rgb), .22); }
+#panel .hd em { font-style:normal; margin-left:auto; color:var(--gray-6);
+                letter-spacing:.14em; opacity:.75; }
+#panel .grp { margin-bottom:calc(var(--cell) * 0.75); }
+#panel .row { display:flex; align-items:center; gap:9px; height:22px;
+              cursor:pointer; -webkit-tap-highlight-color:transparent; }
+#panel .row .dia { width:7px; height:7px; flex:0 0 7px; transform:rotate(45deg);
+                   border:1px solid rgba(var(--accent-rgb), .40); }
+#panel .row .nm { letter-spacing:.14em; text-transform:uppercase;
+                  color:var(--gray-6); font-size:9px; }
+#panel .row .k  { margin-left:auto; font-size:8px; letter-spacing:.16em;
+                  color:var(--gray-6); opacity:.7; }
+#panel .row:hover .nm { color:var(--gray-7); }
+#panel .row:hover .dia { border-color:rgba(var(--accent-rgb), .8); }
+#panel .row.sel .dia { border-color:var(--accent); background:var(--accent); }
+#panel .row.sel .nm { color:var(--accent); }
+
+/* faders: hairline track, 1px fill, rotated-diamond grip */
+.fad { margin-top:11px; cursor:ew-resize; touch-action:none;
+       -webkit-tap-highlight-color:transparent; }
+.fad .lab { display:flex; justify-content:space-between; font-size:8px;
+            letter-spacing:.2em; text-transform:uppercase; color:var(--gray-6);
+            margin-bottom:6px; }
+.fad .lab em { font-style:normal; color:var(--accent); }
+.fad .trk { position:relative; height:11px; }
+.fad .trk i { position:absolute; display:block; }
+.fad .ln  { left:0; right:0; top:5px; height:1px;
+            background:
+              repeating-linear-gradient(to right,
+                rgba(var(--accent-rgb), .70) 0 1px, transparent 1px 16px),
+              linear-gradient(rgba(var(--accent-rgb), .26) 0 100%); }
+.fad .fil { left:0; top:5px; height:1px; width:calc(var(--v) * 100%);
+            background:var(--accent); opacity:.9; }
+.fad .hnd { width:9px; height:9px; top:1px;
+            left:calc(var(--v) * 100% - 4.5px);
+            border:1px solid var(--accent); transform:rotate(45deg); }
+.fad:hover .hnd { border-color:var(--gray-10); }
+
+/* ---- bottom-left chrome strip ---- */
+#chrome { position:fixed; left:calc(var(--cell) * 2); bottom:calc(var(--cell) * 2);
+          z-index:8; pointer-events:none; display:flex; align-items:center;
+          gap:14px; flex-wrap:wrap; max-width:62vw;
+          font-size:9px; letter-spacing:.2em; text-transform:uppercase;
+          color:var(--gray-6); opacity:0; transition:opacity 1.4s ease .8s; }
+#chrome.on { opacity:.88; }
+#chrome b { font-weight:400; color:var(--gray-10); }
+#chrome .d { width:8px; height:8px; border:1px solid rgba(var(--accent-rgb), .62); flex:none;
+             will-change:opacity, transform;
+             transform: rotate(45deg) scale(calc(1 + var(--tr) * 0.3));
+             opacity: calc(0.4 + var(--tr) * 0.7 + var(--lvl) * 0.45); }
+#chrome .warm { color:var(--warm); }
+
+/* ---- bottom-right ledger: the conditioning chain of the selected LDR ---- */
+#ledger { position:fixed; right:calc(var(--cell) * 2); bottom:calc(var(--cell) * 2);
+          z-index:8; pointer-events:none; text-align:right;
+          font-size:9px; letter-spacing:.16em; text-transform:uppercase;
+          line-height:1.9; color:var(--gray-6);
+          opacity:0; transition:opacity 1.4s ease 1s; }
+#ledger.on { opacity:.86; }
+#ledger .hd { color:var(--gray-7); letter-spacing:.24em; font-size:8px;
+              padding-bottom:5px; margin-bottom:5px;
+              border-bottom:1px solid rgba(var(--accent-rgb), .20); }
+#ledger .r { display:flex; align-items:center; justify-content:flex-end; gap:9px; }
+#ledger .r .src { color:var(--gray-6); font-size:8px; letter-spacing:.08em;
+                  text-transform:none; }
+#ledger .r .k { min-width:52px; text-align:right; }
+#ledger .r b { font-weight:400; color:var(--gray-10); min-width:46px;
+               text-align:right; }
+#ledger .r .bar { width:44px; height:1px; background:rgba(var(--accent-rgb), .22);
+                  position:relative; }
+#ledger .r .bar i { position:absolute; left:0; top:0; height:1px;
+                    background:var(--accent); }
+#ledger .gate { color:var(--warm); }
+
+/* ---- top-right controls ---- */
+#tools { position:fixed; right:var(--edge); top:calc(var(--cell) * 2 - 16px);
+         z-index:9; display:flex; opacity:0; transition:opacity 1.4s ease .4s; }
+#tools.on { opacity:.92; }
+#tools button { width:45px; height:45px; background:none; border:0; padding:0;
+                display:grid; place-items:center; cursor:pointer;
+                touch-action:none; -webkit-tap-highlight-color:transparent; }
+#tools button span { font:500 9px/1 var(--mono); letter-spacing:.14em;
+                     color:var(--accent); user-select:none; }
+#tools button:hover span { color:var(--gray-10); }
+#tools button.off span { color:var(--gray-4); }
+#tools .dia { width:11px; height:11px; border:1px solid var(--accent);
+              transform:rotate(45deg); display:block; position:relative; }
+#tools button.play .dia::after { content:""; position:absolute; inset:1px;
+              background:var(--accent); opacity: var(--run); }
+#tools button:hover .dia { border-color:var(--gray-10); }
+
+/* ---- entry gate ---- */
+#gate { position:fixed; inset:0; z-index:10; display:grid; place-items:center;
+        background:var(--gray-1); cursor:pointer; transition:opacity 1.2s ease; }
+#gate.gone { opacity:0; pointer-events:none; }
+#gate .in { text-align:center; padding:24px; }
+#gate .mark { width:38px; height:38px; margin:0 auto 30px; transform:rotate(45deg);
+              border:1px solid var(--accent);
+              animation:pulse 3.2s ease-in-out infinite; }
+@keyframes pulse {
+  0%,100% { opacity:.3; transform:rotate(45deg) scale(.84); }
+  50%     { opacity:1;  transform:rotate(45deg) scale(1); }
+}
+#gate b { display:block; font-family:var(--sans); font-weight:600; font-size:14px; letter-spacing:.44em;
+          color:var(--gray-10); text-transform:lowercase; }
+#gate span { display:block; margin-top:22px; color:var(--gray-6); font-size:9px;
+             letter-spacing:.26em; text-transform:uppercase; }
+#gate u { display:block; margin-top:8px; color:var(--gray-4); font-size:8px;
+          letter-spacing:.2em; text-transform:uppercase; text-decoration:none; }
+
+/* ---- reference overlay ---- */
+#ref { position:fixed; inset:0; z-index:11; background:rgba(11,10,9,.955);
+       overflow-y:auto; padding:calc(var(--cell) * 3) calc(var(--cell) * 2); }
+#ref[hidden] { display:none; }
+#ref .close { position:fixed; right:var(--edge); top:calc(var(--cell) * 2 - 16px);
+              width:45px; height:45px; background:none; border:0; cursor:pointer;
+              display:grid; place-items:center; }
+#ref .close span { font:500 9px/1 var(--mono); letter-spacing:.14em; color:var(--accent); }
+#ref .inner { max-width:calc(var(--cell) * 30); margin:0 auto; }
+#ref h2 { font:400 9px/1 var(--mono); letter-spacing:.28em; text-transform:uppercase;
+          color:var(--gray-6); margin:0 0 12px;
+          padding-bottom:8px; border-bottom:1px solid rgba(var(--accent-rgb), .22); }
+#ref .grp { margin-bottom:calc(var(--cell) * 1.5); }
+#ref .it { display:grid; grid-template-columns: calc(var(--cell) * 5) 1fr;
+           gap:16px; padding:11px 0; border-bottom:1px solid rgba(var(--accent-rgb), .10); }
+#ref .it .nm { font:400 10px/1.5 var(--mono); letter-spacing:.14em;
+               text-transform:uppercase; color:var(--accent);
+               display:flex; align-items:baseline; gap:8px; }
+#ref .it .nm i { font-style:normal; font-size:8px; color:var(--gray-4);
+                 letter-spacing:.1em; }
+#ref .it p { margin:0 0 6px; font:300 13px/1.75 var(--sans); color:var(--gray-7);
+             letter-spacing:.02em; text-transform:none; }
+#ref .it code { font:400 9px/1.8 var(--mono); color:var(--gray-6);
+                letter-spacing:.04em; display:block; }
+#ref .note { font:300 12.5px/1.8 var(--sans); color:var(--gray-7); letter-spacing:.005em;
+             border-left:1px solid rgba(var(--warm-rgb), .5); padding-left:14px;
+             margin-bottom:calc(var(--cell)); }
+#ref .note b { color:var(--warm); font-weight:400; }
+
+@media (prefers-reduced-motion: reduce) {
+  #gate .mark { animation:none; opacity:.85; }
+  body::before { opacity:.7; }
+  body::after { transform:none; opacity:1; }
+  .br { opacity:.4; transform:none; }
+  #title .d, #chrome .d { transform:rotate(45deg); }
+}
+
+@media (max-width: 900px) {
+  :root { --edge: max(2px, calc(var(--cell) - 22px)); }
+  .br { width:20px; height:20px; }
+  .br.tl, .br.tr { top:12px; } .br.bl, .br.br2 { bottom:12px; }
+  .br.tl, .br.bl { left:12px; } .br.tr, .br.br2 { right:12px; }
+  #title { left:var(--cell); top:var(--cell); }
+  #tools { top:calc(var(--cell) - 16px); }
+  #panel { left:var(--cell); right:var(--cell); top:calc(var(--cell) * 3); width:auto; }
+  #panel .grp { margin-bottom:12px; }
+  #panel #modes, #panel #gens { display:flex; flex-wrap:wrap; gap:0 13px; padding-top:4px; }
+  #panel .row { height:19px; }
+  #panel .row .k { display:none; }
+  #fads { display:flex; gap:14px; }
+  #fads .fad { flex:1 1 0; margin-top:6px; }
+  #fads .fad .lab { font-size:7px; letter-spacing:.14em; }
+  #chrome { left:var(--cell); bottom:var(--cell); max-width:none;
+            right:var(--cell); gap:0 8px; letter-spacing:.12em; }
+  #ledger { display:none; }
+}
+</style>
+
+<div id="stage"></div>
+
+<i class="br tl"></i><i class="br tr"></i><i class="br bl"></i><i class="br br2"></i>
+
+<div id="title"><span class="d"></span><b>lse 314</b><i>light sequencer</i></div>
+
+<div id="tools">
+  <button id="bRef" title="reference"><span>REF</span></button>
+  <button id="bSnd" class="off" title="LSe engine render"><span>SND</span></button>
+  <button id="bRun" class="play" title="run / stop"><i class="dia"></i></button>
+</div>
+
+<div id="panel">
+  <div class="grp">
+    <div class="hd">Sequencer mode<em>01 / 03</em></div>
+    <div id="modes"></div>
+  </div>
+  <div class="grp">
+    <div class="hd">Generator<em>02 / 03</em></div>
+    <div id="gens"></div>
+  </div>
+  <div class="grp">
+    <div class="hd">Bench<em>03 / 03</em></div>
+    <div id="fads"></div>
+  </div>
+</div>
+
+<div id="chrome"></div>
+<div id="ledger"></div>
+
+<div id="gate"><div class="in">
+  <div class="mark"></div>
+  <b>lse 314</b>
+  <span>click to enter the dark</span>
+  <u>pointer is the torch &middot; click to leave a light</u>
+</div></div>
+
+<div id="ref" hidden><button class="close"><span>ESC</span></button><div class="inner"></div></div>
+
+<script>
+/* =========================================================================
+   DATA - every name below is read from ctrl-freq666/LSe314 or the LSE314
+   info sheet. Nothing is invented; where a detail is not sourced it is
+   marked as an example map on the page rather than stated as fact.
+   ========================================================================= */
+
+const GENS = [
+  { id:'add',  name:'Additive',        tag:'sine stack',
+    blurb:'One osc~ per clone. Voices are stacked at MUL_FACT semitones apart (2 to 7), not on a harmonic series, and a voice under moses 0.1 is muted outright.',
+    files:['1_SIN_4_ADD.pd','1_SIN_4_ADD_FREQ.pd','1_SIN_4_ADD_MIDI.pd'] },
+  { id:'sub',  name:'Third-octave',    tag:'bp bank',
+    blurb:'A bp~ bank over an audio input. The patch sets its own spacing: filter frequency = 15 + subpatch number * 3, so three semitones per band.',
+    files:['1_BP_FLT_FB_314.pd','1_RES_FLT_314.pd','1_RF_fb.pd'] },
+  { id:'grn',  name:'Granular',        tag:'grains',
+    blurb:'tabread4~ through a 512-point window table, one grain per delay. maxrandomdelay jitters the start, pitchshiftfactor is pow(2, semitones/12).',
+    files:['1_kac_grain.pd','1_GRN_STR_314.pd','1_grain_list_clone.pd'] },
+  { id:'lup',  name:'Looper',          tag:'stretch',
+    blurb:'Two phasor~ readers half a cycle apart, each through a raised cosine built by hand from wrap~, clip~ and cos~. Summing them is the crossfade, so a stretched loop has no seam.',
+    files:['1_KAC_stretch.pd','1_LOAD_SMPL_FLD.pd','1_CUNT_SMPLS_IN_FLDR.pd'] },
+  { id:'png',  name:'Ping',            tag:'struck',
+    blurb:'tabplay~ impulse into two bp~ in parallel, the second detuned by up to a hundred cents at random. That detune is the beating. Q is mapped off the MIDI note.',
+    files:['1_PING_314_CLONE.pd','1_PING_3C_CLONE.pd','1_RES_FLT_314.pd'] }
+];
+
+const FX = [
+  { id:'LCD',  name:'LCD',  full:'Delay + LFO',              blurb:'Light-controlled delay time and feedback, with its own LFO.' },
+  { id:'LCF',  name:'LCF',  full:'State filter + LFO',       blurb:'Variable state filter - cutoff and resonance follow the light.' },
+  { id:'LCAM', name:'LCAM', full:'Amplitude mod / distortion',blurb:'Amplitude modulation into distortion, LFO on the modulator.' },
+  { id:'LCFM', name:'LCFM', full:'Frequency modulation + LFO',blurb:'FM index and ratio under light, with an LFO on the index.' },
+  { id:'LCGV', name:'LCGV', full:'Granular reverb',          blurb:'Grain-cloud reverb. The one effect with no LFO of its own.' }
+];
+
+const MODES = [
+  { id:'man',   name:'Manual',    blurb:'Steps you set by hand. Nothing advances them but you - the base case every other mode is measured against.', files:['1_LED_MAN_314.pd','oneMANUALmetro.pd'] },
+  { id:'euc',   name:'Euclidean', blurb:'k onsets spread as evenly as 8 steps allow. One knob turns a straight pulse into a clave.',                 files:['1_EUCLID.pd','euclidean rithm/'] },
+  { id:'urn',   name:'Urn',       blurb:'Random order, no repeat until all eight have played. Unpredictable but fair - every LED gets its turn.',      files:['oneURNseq.pd','1_MOD_URN_SEQ_LED.pd'] },
+  { id:'mod',   name:'Modulo',    blurb:'Each LED fires on its own divisor, so eight independent cycles drift in and out of phase. The polyrhythm mode.', files:['POLIRHITMS_MODULO/','1_MOD_URN_SEQ_LED.pd'] },
+  { id:'swg',   name:'Swing',     blurb:'Even steps arrive late by a settable fraction. Same pattern, different body.',                                 files:['1_swing.pd','1_tempo_change.pd'] },
+  { id:'rnd',   name:'Drift',     blurb:'The metro interval itself varies per step, so tempo breathes instead of ticking.',                            files:['1_RNDM_METRO_VARY.pd','1_man_metro_314.pd'] }
+];
+
+/* The four rows are the Control Panel's four sections (source: LSE314 info
+   sheet). Per-sensor targets inside a row are an example map - stated as
+   such on the page. */
+const ROWS = [
+  { sect:'Sound',     targets:['Fundamental','Partial spread','Grain size','Grain density','Loop start','Loop length','Ping scale','Resonance'] },
+  { sect:'FX',        targets:['LCD depth','LCF depth','LCAM depth','LCFM depth','LCGV depth','LCD feedback','LCF resonance','Gate threshold'] },
+  { sect:'Sequencer', targets:['Tempo','Onset count','Pattern rotation','Swing amount','LED fade time','Step gate length','Mode sub-select','Link offset'] },
+  { sect:'Mix',       targets:['Gen 1 level','Gen 2 level','Gen 3 level','Gen 4 level','Gen 5 level','External in','FX send','Master']}
+];
+
+const CHAIN = [
+  { k:'ADC',    src:'comport',                 fmt:v=>v.toFixed(0),  norm:v=>v/1023 },
+  { k:'norm01', src:'analog_in_nrmlz.pd',      fmt:v=>v.toFixed(3),  norm:v=>v },
+  { k:'invert', src:'1_ar_an_nrm_inv.pd',      fmt:v=>v.toFixed(3),  norm:v=>v },
+  { k:'smooth', src:'1_LDR_smooth.pd',         fmt:v=>v.toFixed(3),  norm:v=>v },
+  { k:'curve',  src:'1_exp_scale_ctrl.pd',     fmt:v=>v.toFixed(3),  norm:v=>v },
+  { k:'out',    src:'1_sens_treshold.pd',      fmt:v=>v.toFixed(3),  norm:v=>v }
+];
+
+/* =========================================================================
+   STATE
+   ========================================================================= */
+const reduced = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+const S = {
+  mode:'euc', gen:'add',
+  bpm:104, dens:5, beam:120,
+  ambient:0.02,
+  running:!reduced,
+  sel:0,
+  lights:[],
+  pointer:{ x:-999, y:-999, inside:false },
+  step:0, nextStepAt:0, urnBag:[],
+  sound:false,
+  entered:false,
+  tr:0, breath:0
+};
+
+const sensors = [], leds = [];
+for (let i = 0; i < 32; i++) sensors.push({ i, row:(i/8)|0, col:i%8, x:0, y:0, adc:1023, n:0, inv:0, smt:0, exp:0, out:0, gate:false });
+for (let i = 0; i < 8;  i++) leds.push({ i, x:0, y:0, level:0, on:false, ring:0 });
+
+/* =========================================================================
+   SEQUENCER
+   ========================================================================= */
+function bjorklund(k, n) {           // onsets k in n steps
+  k = Math.max(0, Math.min(n, k));
+  const out = new Array(n).fill(false);
+  if (k === 0) return out;
+  let bucket = 0;
+  for (let i = 0; i < n; i++) { bucket += k; if (bucket >= n) { bucket -= n; out[i] = true; } }
+  return out;
+}
+
+const manualPattern = [true,false,false,true,false,true,false,false];
+
+function drawUrn() {
+  if (S.urnBag.length === 0) {
+    S.urnBag = [0,1,2,3,4,5,6,7];
+    for (let i = S.urnBag.length - 1; i > 0; i--) {
+      const j = (Math.random() * (i+1)) | 0;
+      [S.urnBag[i], S.urnBag[j]] = [S.urnBag[j], S.urnBag[i]];
+    }
+  }
+  return S.urnBag.pop();
+}
+
+function stepInterval() {
+  const base = 60000 / S.bpm / 2;                 // eighth notes
+  if (S.mode === 'swg') return S.step % 2 === 0 ? base * (1 + S.dens/24) : base * (1 - S.dens/24);
+  if (S.mode === 'rnd') return base * (0.55 + Math.random() * 0.9);
+  return base;
+}
+
+function fireStep() {
+  const s = S.step;
+  const fire = i => { leds[i].level = 1; leds[i].ring = 1; emit(i); };
+  switch (S.mode) {
+    case 'man': if (manualPattern[s % 8]) fire(s % 8); break;
+    case 'euc': { const p = bjorklund(S.dens, 8); if (p[s % 8]) fire(s % 8); break; }
+    case 'urn': fire(drawUrn()); break;
+    case 'mod': leds.forEach((L,i) => { if (s % (i + 2) === 0) fire(i); }); break;
+    case 'swg': { const p = bjorklund(S.dens, 8); if (p[s % 8]) fire(s % 8); break; }
+    case 'rnd': fire(s % 8); break;
+  }
+  S.tr = 1;
+  S.step = (s + 1) % 64;
+  if (S.sound) emitSound();
+}
+
+/* =========================================================================
+   LIGHT MODEL
+   An LDR in a divider reads HIGH in darkness, which is exactly why the
+   patch family is called norm / inv / smooth. Model it the same way round.
+   Sources are listed so the contour renderer can draw the SAME falloff it
+   integrates - one function, two consumers.
+   ========================================================================= */
+function sources() {
+  const out = [];
+  if (S.pointer.inside) out.push({ x:S.pointer.x, y:S.pointer.y, k:1.6, r:S.beam, live:true });
+  for (const L of S.lights)  out.push({ x:L.x, y:L.y, k:1.1, r:S.beam, live:false });
+  for (const L of leds) if (L.level > 0.01) out.push({ x:L.x, y:L.y, k:L.level * 1.25, r:110, led:true, c:LEDC[L.i] });
+  return out;
+}
+
+function illuminate(sx, sy, src) {
+  let e = S.ambient;
+  for (const s of src) {
+    const d = Math.hypot(sx - s.x, sy - s.y);
+    e += s.k / (1 + (d / s.r) * (d / s.r));
+  }
+  return e;
+}
+
+/* =========================================================================
+   P5 SKETCH - everything drawn is a hairline or a diamond
+   ========================================================================= */
+const AC = [163, 149, 137];   // brand #a39589 - the ONE accent
+const WM = [214, 170, 110];   // tungsten emission, same temperature family
+
+/* The rail is 8 RGB LEDs (LSE314 info sheet), so it gets a spectrum instead of
+   one colour. Hue is a function of column, cyan-anchored at column 1 and taken
+   the long way round the wheel - the panel below stays monochrome cyan, because
+   an LDR reads one scalar and nothing else. */
+function hsv(h, s, v) {
+  h = ((h % 360) + 360) % 360 / 60;
+  const c = v * s, x = c * (1 - Math.abs(h % 2 - 1)), m = v - c;
+  const t = [[c,x,0],[x,c,0],[0,c,x],[0,x,c],[x,0,c],[c,0,x]][Math.floor(h) % 6];
+  return [(t[0]+m)*255, (t[1]+m)*255, (t[2]+m)*255];
+}
+const LEDC = [];
+const LEDH = [];
+for (let i = 0; i < 8; i++) { LEDH.push(46 - i * 3.3); LEDC.push(hsv(LEDH[i], 0.34 + i * 0.018, 1)); }
+
+/* No particles and no glow (Sep, 2026-08-31): the house grammar is a 45-degree
+   network. An onset does not throw sparks - it LOADS a filament, and the
+   filament is already there. emit() is kept as the onset hook so the sequencer
+   does not need to know that the renderer changed. */
+function emit(i) { leds[i].ring = 1; }
+
+const sketch = (p) => {
+  let W = 900, H = 600, cell = 32;
+  let box = { l:0, t:0, r:0, b:0 };
+  let scopeY = 0, scopeA = 0;
+  let ph = 0;
+
+  /* RESOLUTION.
+     Every frame pays twice for the full backing store: once to clear the crisp
+     canvas, once to composite the persistence layer onto it. At devicePixelRatio
+     2 a 1600x1000 window is 6.4M pixels done twice, which is where the frame
+     budget went. Cap the backing store by AREA instead of by ratio, so a small
+     window still gets a sharp 2x and a large one stays inside budget.
+     With the persistence buffer gone there is exactly ONE surface, so the whole
+     budget goes to the crisp pass. */
+  const MAXPX = 2600000;
+  let DENS = 1;
+  function pickRes() {
+    const dpr = window.devicePixelRatio || 1;
+    DENS = Math.max(1, Math.min(dpr, 2, Math.sqrt(MAXPX / Math.max(1, W * H))));
+  }
+
+  p.setup = () => {
+    resize();
+    pickRes();
+    const c = p.createCanvas(W, H);
+    c.id('cv');
+    p.pixelDensity(DENS);
+    layout();
+    S.nextStepAt = p.millis();
+    if (reduced) S.running = false;
+    syncRun();
+  };
+
+  p.windowResized = () => {
+    resize(); pickRes(); p.pixelDensity(DENS); p.resizeCanvas(W, H);
+    layout();
+  };
+
+  function resize() { W = window.innerWidth; H = window.innerHeight; }
+
+  function layout() {
+    const narrow = W < 900;
+    // narrow has no left column and no ledger to clear, so the field takes the width
+    box.l = narrow ? cell * 2.2 : cell * 13;
+    box.r = W - cell * (narrow ? 2.2 : 4.5);
+    if (narrow) {
+      // MEASURED, not assumed: the band's height depends on how the mode and
+      // generator names wrap at this width, so ask the DOM where it ends.
+      const pb = document.getElementById('panel').getBoundingClientRect().bottom;
+      box.t = (pb > 0 ? pb : cell * 10) + cell * 1.5;
+    } else {
+      box.t = cell * 4.5;
+    }
+    box.b = H - cell * (narrow ? 4 : 7);
+    if (box.r - box.l < 200) { box.l = cell * 2; box.r = W - cell * 2; }
+
+    const bw = box.r - box.l, bh = box.b - box.t;
+
+    const railY = box.t + bh * (narrow ? 0.055 : 0.09);
+    leds.forEach((L, i) => { L.x = box.l + (bw / 7) * i; L.y = railY; });
+
+    /* The scope sits between the rail and the sensor field: light out, sound,
+       light read back. Its amplitude is CLAMPED against the gap to the rail so a
+       tall narrow viewport cannot let the trace draw through the LEDs - that
+       collision is what made the phone layout read as a smudge. */
+    scopeY = box.t + bh * (narrow ? 0.20 : 0.225);
+    scopeA = Math.min(Math.max(12, bh * 0.062), (scopeY - railY) * 0.52);
+
+    const top = box.t + bh * (narrow ? 0.34 : 0.38), gh = bh * (narrow ? 0.66 : 0.56);
+    sensors.forEach(s => {
+      s.x = box.l + (bw / 7) * s.col;
+      s.y = top + (gh / 3) * s.row;
+    });
+    wire();
+  }
+
+  p.draw = () => {
+    const now = p.millis();
+
+    if (S.running && !reduced && S.entered) {
+      let guard = 0;
+      while (now >= S.nextStepAt && guard++ < 16) { fireStep(); S.nextStepAt += stepInterval(); }
+      if (guard >= 16) S.nextStepAt = now + stepInterval();
+    } else {
+      S.nextStepAt = now;
+    }
+
+    // fades - 1_LED_FADINOUT_314.pd
+    for (const L of leds) { L.level *= 0.925; L.on = L.level > 0.02; L.ring *= 0.90; }
+    S.tr *= 0.86;
+    S.breath = 0.5 + 0.5 * Math.sin(now / 5200);
+
+    // ---- sensor conditioning ----
+    const src = sources();
+    let sum = 0;
+    for (const s of sensors) {
+      const e = illuminate(s.x, s.y, src);
+      s.adc = 1023 * (1 / (1 + e));           // bright light -> low ADC
+      s.n   = s.adc / 1023;
+      s.inv = 1 - s.n;
+      s.smt = s.smt + (s.inv - s.smt) * 0.18; // one-pole, 1_LDR_smooth.pd
+      s.exp = Math.pow(s.smt, 1.9);           // 1_exp_scale_ctrl.pd
+      s.gate = s.exp > 0.12;                  // 1_sens_treshold.pd
+      s.out = s.gate ? s.exp : 0;
+      sum += s.out;
+    }
+    sndFrame();   // light drives the level of the running engine render
+    const lvl = Math.min(1, sum / 10);
+
+    /* ---- one pass, everything crisp ----
+       There is no persistence buffer and no additive layer any more. Every mark
+       below is a hairline or a diamond drawn once, at 0, 45 or 90 degrees. */
+    p.clear();
+    drawContours(src);
+    drawMycelium();
+    drawSweep();
+    drawScope(lvl);
+    drawSources(src);
+    drawRail();
+    drawLeds();
+    drawSensors();
+    drawEdgeType();
+
+    /* A custom property written on :root invalidates style for every rule that
+       reads it, so writing five of them per frame recalculates the whole
+       document 60 times a second for readouts the eye samples far slower.
+       Vars run at 30 Hz and only when they actually moved; the text ledger,
+       which is words, runs at 12. Neither is the animation - the canvas is. */
+    if (now - lastVars > 33) { lastVars = now; syncVars(lvl); }
+    if (now - lastDom  > 84) { lastDom  = now; syncDom(); }
+  };
+
+  let lastVars = -1e9, lastDom = -1e9;
+
+  /* -------- diamonds and hairlines: the whole vocabulary -------- */
+  function dia(g, x, y, r) {
+    g.beginShape();
+    g.vertex(x, y - r); g.vertex(x + r, y); g.vertex(x, y + r); g.vertex(x - r, y);
+    g.endShape(g.CLOSE);
+  }
+
+  /* ISO-CONTOURS. For a source e = k / (1 + (d/r)^2), the radius at which the
+     level crosses L is d = r * sqrt(k/L - 1). Draw a diamond there. This is
+     the falloff the conditioning chain is reading, drawn as geometry rather
+     than as a blur - and it is exact, not decorative. */
+  const LEVELS = [0.32, 0.58, 1.05];
+
+  function drawContours(src) {
+    p.noFill(); p.strokeWeight(1);
+    for (const s of src) {
+      const c = s.c || (s.led ? WM : AC);
+      for (let i = 0; i < LEVELS.length; i++) {
+        const L = LEVELS[i];
+        if (s.k <= L) continue;
+        const d = s.r * Math.sqrt(s.k / L - 1);
+        if (d > 250) continue;                  // past this it is not a contour, it is wallpaper
+        p.stroke(c[0], c[1], c[2], (s.led ? 30 : 24) * (1 - i / LEVELS.length) + 7);
+        dia(p, s.x, s.y, d);
+      }
+    }
+  }
+
+  /* =====================================================================
+     THE NETWORK
+
+     Light transport is drawn as a ROUTED NETWORK, never as a glow. Every
+     filament runs at 0, 45 or 90 degrees and nothing else: a run to a node
+     that is off-axis takes one 45-degree leg and then one axis leg, which is
+     octilinear routing and is the only geometry on this page.
+
+     The graph is fixed - 8 emitters over a 4 x 8 field of readers, wired
+     straight down, and diagonally to each neighbour on the row below. A
+     filament's weight is the light actually arriving at the two nodes it
+     joins, so the network LOADS where light is and goes quiet where it is
+     not. It never disappears: an unlit filament is still drawn as a dark
+     hairline, because a mycelium does not stop existing when it is not
+     carrying anything.
+     ===================================================================== */
+  const edges = [];
+  function wire() {
+    edges.length = 0;
+    for (let c = 0; c < 8; c++) edges.push({ a:leds[c], b:sensors[c], led:c });
+    for (let r = 0; r < 3; r++)
+      for (let c = 0; c < 8; c++) {
+        edges.push({ a:sensors[r * 8 + c], b:sensors[(r + 1) * 8 + c], led:c });
+        if (c > 0) edges.push({ a:sensors[r * 8 + c], b:sensors[(r + 1) * 8 + c - 1], led:c });
+        if (c < 7) edges.push({ a:sensors[r * 8 + c], b:sensors[(r + 1) * 8 + c + 1], led:c });
+      }
+  }
+
+  /* One axis leg along the longer axis, then one 45-degree leg INTO the node -
+     that ordering is what makes every filament arrive on the diagonal instead
+     of sliding in flat along a row, which is the difference between a network
+     and a box diagram. */
+  function run(x0, y0, x1, y1) {
+    const dx = x1 - x0, dy = y1 - y0;
+    const ax = Math.abs(dx), ay = Math.abs(dy), d = Math.min(ax, ay);
+    const mx = ax > ay ? x1 - Math.sign(dx) * d : x0;
+    const my = ax > ay ? y0                     : y1 - Math.sign(dy) * d;
+    p.line(x0, y0, mx, my);
+    p.line(mx, my, x1, y1);
+  }
+
+  const nodeV = n => (n.out !== undefined ? n.out : n.level);
+
+  function drawMycelium() {
+    p.strokeWeight(1);
+    for (const e of edges) {
+      const w = Math.min(nodeV(e.a), nodeV(e.b));
+      const C = LEDC[e.led];
+      const t = Math.min(1, w * 2.6);
+      // the dormant network is always visible; carrying only raises it
+      p.stroke(AC[0] + (C[0] - AC[0]) * t,
+               AC[1] + (C[1] - AC[1]) * t,
+               AC[2] + (C[2] - AC[2]) * t,
+               22 + 165 * t);
+      run(e.a.x, e.a.y + 10, e.b.x, e.b.y - 10);
+    }
+  }
+
+  function drawSweep() {
+    if (!S.running || !S.entered) return;
+    const i = S.step % 8, C = LEDC[i];
+    p.strokeWeight(1);
+    p.stroke(C[0], C[1], C[2], 18 + 74 * S.tr);
+    p.line(leds[i].x, box.t, leds[i].x, box.b);
+  }
+
+  /* ---- the scope ----
+     One screen of the generator's own shape, phase-advanced per frame and drawn
+     once, sharp. It is a SKETCH of the generator family, taken from the same
+     selection the panel makes - not a capture of the LSe engine, which is on
+     the Pi. */
+  /* Each case is read off the LSe patch that actually makes the sound, named
+     in its own comment - so the trace carries the shape the Pi produces rather
+     than a generic waveform of the same family. Paths are relative to
+     software/pure data/rpi4_blockas_OS/lse314/01_AUDIO/. */
+  function genSample(t, lvl) {
+    switch (S.gen) {
+
+      /* 1_SIN_4_ADD.pd - one osc~ per clone. MIDI = $2 + clone * MUL_FACT,
+         and MUL_FACT is r MUL_FACT -> *5 -> +2, so 2 to 7 SEMITONES between
+         neighbouring voices. It is an equal-interval stack, NOT a harmonic
+         series: partial k sits at 2^(k*MUL/12), not at k. A voice whose LDR
+         is under moses 0.1 is muted outright, so level opens voices. */
+      case 'add': {
+        const MUL = 2 + Math.round(lvl * 5);
+        const n   = 2 + Math.round(lvl * 6);
+        let v = 0;
+        for (let k = 0; k < n; k++) v += Math.sin(t * Math.pow(2, k * MUL / 12));
+        return v / Math.max(2, n) * 1.35;
+      }
+
+      /* 1_BP_FLT_FB_314.pd - a bp~ BANK over an audio input, not a synth.
+         The patch states its own spacing: "$2 = filt frequency = 15 +
+         subpatch numebr * 3", i.e. three semitones per band. Each band is a
+         resonance, so the trace is a sum of ringing partials whose emphasis
+         walks up the bank with the reading. */
+      case 'sub': {
+        const Q = 0.35 + lvl * 0.6;
+        let v = 0;
+        for (let k = 0; k < 5; k++) {
+          const f = 2 * Math.pow(2, (k * 3) / 12);
+          const d = k - lvl * 4;
+          v += Math.sin(t * f + k) * Math.exp(-d * d * (1.45 - Q));
+        }
+        return v * 0.6;
+      }
+
+      /* 1_kac_grain.pd - tabread4~ kacsound through tabread4~ mywindow, one
+         grain per delay. graintimems sets the rate, maxrandomdelay jitters
+         the start, and pitchshiftfactor is expr pow(2, $f1/12). The jitter is
+         hashed off the grain index here so the trace is stable frame to
+         frame instead of noise. */
+      case 'grn': {
+        const rate = 5 + lvl * 7;
+        const g = t * rate / (Math.PI * 2);
+        const i = Math.floor(g), u = g - i;
+        const win = 0.5 - 0.5 * Math.cos(u * Math.PI * 2);
+        const h = Math.abs(Math.sin(i * 12.9898) * 43758.5453) % 1;
+        const pit = Math.pow(2, (h - 0.5) * 7 / 12);
+        return Math.sin(t * 9 * pit + h * 6.283) * win * (0.42 + 0.58 * lvl);
+      }
+
+      /* 1_KAC_stretch.pd - TWO phasor~ readers half a cycle apart, each
+         through the raised cosine the patch builds by hand (wrap~, -~ 0.5,
+         clip~, cos~, -~ 1, *~ -0.5). Summing them is the crossfade, which is
+         why a stretched loop has no seam. The speed inlet is 1 = normal. */
+      case 'lup': {
+        const sp = 0.4 + lvl * 0.9;
+        const p1 = ((t * sp / (Math.PI * 2)) % 1 + 1) % 1;
+        const p2 = (p1 + 0.5) % 1;
+        const env  = q => 0.5 * (1 - Math.cos(2 * Math.PI * q));
+        const head = q => Math.sin(q * Math.PI * 2 * 3) + 0.4 * Math.sin(q * Math.PI * 2 * 7.02);
+        return (head(p1) * env(p1) + head(p2) * env(p2)) * 0.5;
+      }
+
+      /* 1_PING_314_CLONE.pd - tabplay~ impulse into TWO bp~ in parallel. The
+         second centre is detuned by random 100 -> * 0.01 semitone, i.e. up to
+         one hundred cents, which is where the beating comes from. Q is mapped
+         off the MIDI note, so a higher reading rings longer. */
+      case 'png': {
+        const s = ((t / (Math.PI * 2)) % 1 + 1) % 1;
+        const dec = Math.exp(-s * (5.6 - lvl * 3));
+        const f = 7 + lvl * 9;
+        const det = Math.pow(2, 0.62 / 12);
+        return (Math.sin(t * f) + 0.8 * Math.sin(t * f * det)) * dec * 0.58;
+      }
+    }
+    return Math.sin(t);
+  }
+
+  function drawScope(lvl) {
+    ph += 0.055 + lvl * 0.13;
+    const N = 132, w = box.r - box.l, amp = scopeA * (0.20 + 0.95 * lvl + 0.28 * S.tr);
+    p.noFill(); p.strokeWeight(1);
+    p.stroke(AC[0], AC[1], AC[2], 10);
+    p.line(box.l, scopeY, box.r, scopeY);                    // centre datum
+    p.stroke(AC[0], AC[1], AC[2], 58 + 90 * lvl + 50 * S.tr);
+    p.beginShape();
+    for (let i = 0; i <= N; i++) {
+      const u = i / N;
+      const win = Math.min(1, Math.min(u, 1 - u) * 9);        // fade the trace into the field
+      p.vertex(box.l + u * w, scopeY - genSample(ph + u * Math.PI * 12, lvl) * amp * win);
+    }
+    p.endShape();
+  }
+
+  /* ---- crisp: the source markers stay hairline, they are instrument cursors ---- */
+  function drawSources(src) {
+    p.noFill(); p.strokeWeight(1);
+    for (const s of src) {
+      if (s.ph || s.led) continue;
+      const c = s.c || AC;
+      p.stroke(c[0], c[1], c[2], s.live ? 215 : 150);
+      dia(p, s.x, s.y, 6);
+      if (s.live) {
+        p.stroke(c[0], c[1], c[2], 70);
+        p.line(s.x - 22, s.y, s.x - 10, s.y); p.line(s.x + 10, s.y, s.x + 22, s.y);
+        p.line(s.x, s.y - 22, s.x, s.y - 10); p.line(s.x, s.y + 10, s.x, s.y + 22);
+      }
+    }
+  }
+
+  function drawRail() {
+    p.strokeWeight(1);
+    // the rail carries its own spectrum: eight segments, one per LED
+    for (let i = 0; i < 7; i++) {
+      const A = LEDC[i], B = LEDC[i + 1];
+      p.stroke((A[0]+B[0])/2, (A[1]+B[1])/2, (A[2]+B[2])/2, 42);
+      p.line(leds[i].x, leds[i].y, leds[i+1].x, leds[i+1].y);
+    }
+  }
+
+  /* An emitter is a node, not a lamp. Level is shown as CONCENTRIC RINGS at
+     45 degrees - more rings is more light - and an onset sends one ring
+     outward. Nothing here is filled and nothing is blurred. */
+  function drawLeds() {
+    p.strokeWeight(1); p.noFill();
+    for (const L of leds) {
+      const C = LEDC[L.i];
+      if (L.ring > 0.02) {
+        p.stroke(C[0], C[1], C[2], 120 * L.ring);
+        dia(p, L.x, L.y, 11 + (1 - L.ring) * 46);
+      }
+      p.stroke(C[0], C[1], C[2], 58 + 180 * L.level);
+      dia(p, L.x, L.y, 9);
+      const n = Math.floor(L.level * 3);
+      for (let k = 1; k <= n; k++) {
+        p.stroke(C[0], C[1], C[2], (150 * L.level) / (k + 1));
+        dia(p, L.x, L.y, 9 - k * 2.6);
+      }
+    }
+  }
+
+  function drawSensors() {
+    for (const s of sensors) {
+      const v = s.out, isSel = s.i === S.sel;
+
+      // outer diamond: the LDR itself, always present. Unread is not absent.
+      p.noFill(); p.strokeWeight(1);
+      p.stroke(AC[0], AC[1], AC[2], 46 + 175 * v);
+      dia(p, s.x, s.y, 9);
+
+      // inner filled diamond: the conditioned output, as AREA not brightness
+      if (v > 0.004) {
+        p.noStroke(); p.fill(AC[0], AC[1], AC[2], 60 + 175 * v);
+        dia(p, s.x, s.y, 1 + 7 * v);
+      } else {
+        p.stroke(AC[0], AC[1], AC[2], 60); p.strokeWeight(1);
+        p.point(s.x, s.y);
+      }
+
+      // gate: a hairline tick on the right shoulder once past threshold
+      if (s.gate) {
+        p.stroke(WM[0], WM[1], WM[2], 90 + 120 * v); p.strokeWeight(1);
+        p.line(s.x + 11, s.y - 4, s.x + 11, s.y + 4);
+      }
+
+      // selection: the corner-bracket motif, at sensor scale
+      if (isSel) {
+        const r = 15, g = 6;
+        p.stroke(AC[0], AC[1], AC[2], 190); p.strokeWeight(1); p.noFill();
+        p.line(s.x - r, s.y - r, s.x - r + g, s.y - r); p.line(s.x - r, s.y - r, s.x - r, s.y - r + g);
+        p.line(s.x + r, s.y - r, s.x + r - g, s.y - r); p.line(s.x + r, s.y - r, s.x + r, s.y - r + g);
+        p.line(s.x - r, s.y + r, s.x - r + g, s.y + r); p.line(s.x - r, s.y + r, s.x - r, s.y + r - g);
+        p.line(s.x + r, s.y + r, s.x + r - g, s.y + r); p.line(s.x + r, s.y + r, s.x + r, s.y + r - g);
+      }
+    }
+  }
+
+  function drawEdgeType() {
+    p.noStroke();
+    /* p5 1.9.4 textFont() wraps its WHOLE argument in one pair of quotes, so a
+       CSS stack becomes the single bogus family "IBM Plex Mono, ui-monospace,
+       monospace" and the canvas falls back to its default. Measured live:
+       ctx.font read 8px "IBM Plex Mono, ui-monospace, monospace" and
+       measureText came back serif-width. Pass ONE family name and let p5 quote
+       it - writing drawingContext.font directly does not survive either, since
+       every text() call rebuilds ctx.font from p5's own state. */
+    p.textFont('IBM Plex Mono');
+    p.textSize(8);
+
+    /* Row names. Right-aligned to the left of the first node needs a gutter
+       the narrow layout does not have - box.l is 2.2 cells there, and
+       SEQUENCER at 8px is wider than that, so it was drawing off the left
+       edge of the canvas. Narrow puts the label ABOVE its row instead. */
+    p.fill(120, 118, 114, 215);
+    if (W >= 900) {
+      p.textAlign(p.RIGHT, p.CENTER);
+      for (let r = 0; r < 4; r++) p.text(ROWS[r].sect.toUpperCase(), sensors[r * 8].x - 22, sensors[r * 8].y);
+    } else {
+      p.textAlign(p.LEFT, p.BOTTOM);
+      for (let r = 0; r < 4; r++) p.text(ROWS[r].sect.toUpperCase(), box.l - 4, sensors[r * 8].y - 17);
+    }
+
+    // column index under the panel, tinted by the LED that lights that column
+    p.textAlign(p.CENTER, p.TOP);
+    for (let c = 0; c < 8; c++) {
+      const s = sensors[24 + c], C = LEDC[c], L = leds[c].level;
+      p.fill(100 + (C[0] - 100) * L, 100 + (C[1] - 100) * L, 100 + (C[2] - 100) * L, 200 + 55 * L);
+      p.text(String(c + 1).padStart(2, '0'), s.x, s.y + 20);
+    }
+
+    p.textAlign(p.LEFT, p.BOTTOM);
+    p.fill(120, 120, 120, 215);
+    p.text('8 x RGB LED', leds[0].x - 4, leds[0].y - 30);
+    if (W >= 900) {
+      p.textAlign(p.RIGHT, p.BOTTOM);
+      p.text('32 x LDR', sensors[7].x + 4, sensors[0].y - 30);
+    }
+    /* 32 x LDR is right-aligned and only drawn wide, LED 01 sits at box.l on
+       the rail - so the caption takes whichever edge is free, and is clamped
+       off the first sensor row. It names the patch the trace is modelled on. */
+    const cap = 'SCOPE · ' + (GENS.find(g => g.id === S.gen) || {}).files[0];
+    const cy = Math.min(scopeY + scopeA + 7, sensors[0].y - 27);
+    p.fill(110, 106, 100, 170);
+    if (W >= 900) { p.textAlign(p.LEFT, p.TOP);  p.text(cap, box.l, cy); }
+    else          { p.textAlign(p.RIGHT, p.TOP); p.text(cap, box.r, cy); }
+  }
+
+  /* --------- write the frame's reading into CSS, once --------- */
+  const VARS = { '--lvl':-1, '--tr':-1, '--gate':-1, '--breath':-1 };
+  function put(r, k, v) {
+    const q = Math.round(v * 250) / 250;          // below this nothing is visible
+    if (q === VARS[k]) return;
+    VARS[k] = q; r.setProperty(k, String(q));
+  }
+  function syncVars(lvl) {
+    let lit = 0;
+    for (const s of sensors) if (s.gate) lit++;
+    const r = document.documentElement.style;
+    put(r, '--lvl', lvl);
+    put(r, '--tr', S.tr);
+    put(r, '--gate', lit / 32);
+    put(r, '--breath', S.breath);
+  }
+
+  /* ---- pointer ---- */
+  p.mouseMoved = p.mouseDragged = () => {
+    S.pointer.x = p.mouseX; S.pointer.y = p.mouseY;
+    S.pointer.inside = p.mouseX >= 0 && p.mouseX <= W && p.mouseY >= 0 && p.mouseY <= H;
+    const r = document.documentElement.style;
+    r.setProperty('--px', ((p.mouseX / W) * 2 - 1).toFixed(3));
+    r.setProperty('--py', ((p.mouseY / H) * 2 - 1).toFixed(3));
+    if (S.pointer.inside) pickNearestSensor(p.mouseX, p.mouseY);
+  };
+
+  p.mousePressed = () => {
+    if (!S.entered) return;
+    const q = { x:p.mouseX, y:p.mouseY };
+    // chrome sits above the canvas: a click that lands on it is not a light
+    const hitEl = document.elementFromPoint(q.x, q.y);
+    if (hitEl && hitEl.id !== 'cv' && !hitEl.closest('#stage')) return;
+    if (q.x < box.l - 40 || q.x > box.r + 40 || q.y < box.t - 40 || q.y > box.b + 40) return;
+    const hit = S.lights.findIndex(L => Math.hypot(L.x - q.x, L.y - q.y) < 22);
+    if (hit >= 0) S.lights.splice(hit, 1);
+    else if (S.lights.length < 6) S.lights.push({ x:q.x, y:q.y });
+    return false;
+  };
+
+  function pickNearestSensor(x, y) {
+    let best = S.sel, bd = 1e9;
+    for (const s of sensors) {
+      const d = Math.hypot(s.x - x, s.y - y);
+      if (d < bd) { bd = d; best = s.i; }
+    }
+    if (bd < 120) S.sel = best;
+  }
+};
+
+new p5(sketch, document.getElementById('stage'));
+
+/* =========================================================================
+   DOM
+   ========================================================================= */
+function el(tag, cls, html) { const e = document.createElement(tag); if (cls) e.className = cls; if (html != null) e.innerHTML = html; return e; }
+
+/* ---- mode + generator rows ---- */
+const modeBox = document.getElementById('modes');
+MODES.forEach((m, i) => {
+  const r = el('div', 'row' + (m.id === S.mode ? ' sel' : ''));
+  r.innerHTML = '<i class="dia"></i><span class="nm">' + m.name + '</span><span class="k">' + (i+1) + '</span>';
+  r.onclick = () => setMode(m.id);
+  r.dataset.mode = m.id;
+  modeBox.appendChild(r);
+});
+function setMode(id) {
+  S.mode = id; S.urnBag = [];
+  modeBox.querySelectorAll('.row').forEach(r => r.classList.toggle('sel', r.dataset.mode === id));
+}
+
+const genBox = document.getElementById('gens');
+GENS.forEach(g => {
+  const r = el('div', 'row' + (g.id === S.gen ? ' sel' : ''));
+  r.innerHTML = '<i class="dia"></i><span class="nm">' + g.name + '</span><span class="k">' + g.tag.slice(0,4) + '</span>';
+  r.onclick = () => setGen(g.id);
+  r.dataset.gen = g.id;
+  genBox.appendChild(r);
+});
+function setGen(id) {
+  S.gen = id;
+  if (S.sound) loadGen(id).then(() => startVoice(id)).catch(() => {});
+  genBox.querySelectorAll('.row').forEach(r => r.classList.toggle('sel', r.dataset.gen === id));
+}
+
+/* ---- faders ---- */
+const FADS = [
+  { id:'bpm',  lab:'Tempo',   min:40,  max:200, fmt:v => v.toFixed(0) + ' BPM' },
+  { id:'dens', lab:'Onsets',  min:0,   max:8,   step:1, fmt:v => v.toFixed(0) + '/8' },
+  { id:'beam', lab:'Beam',    min:40,  max:260, fmt:v => v.toFixed(0) + ' PX' }
+];
+const fadBox = document.getElementById('fads');
+FADS.forEach(f => {
+  const d = el('div', 'fad');
+  d.innerHTML = '<div class="lab"><span>' + f.lab + '</span><em id="v_' + f.id + '"></em></div>' +
+                '<div class="trk"><i class="ln"></i><i class="fil"></i><i class="hnd"></i></div>';
+  fadBox.appendChild(d);
+  const trk = d.querySelector('.trk');
+  const put = v => {
+    if (f.step) v = Math.round(v);
+    S[f.id] = Math.max(f.min, Math.min(f.max, v));
+    d.style.setProperty('--v', ((S[f.id] - f.min) / (f.max - f.min)).toFixed(4));
+    d.querySelector('#v_' + f.id).textContent = f.fmt(S[f.id]);
+  };
+  const grab = e => {
+    const r = trk.getBoundingClientRect();
+    const t = Math.max(0, Math.min(1, (e.clientX - r.left) / r.width));
+    put(f.min + t * (f.max - f.min));
+  };
+  d.addEventListener('pointerdown', e => { d.setPointerCapture(e.pointerId); grab(e); e.preventDefault(); });
+  d.addEventListener('pointermove', e => { if (d.hasPointerCapture(e.pointerId)) grab(e); });
+  put(S[f.id]);
+});
+
+/* ---- chrome + ledger ----
+   Built ONCE, then written per frame as text. A readout that rebuilds its own
+   DOM every frame is the one thing that would make the page stutter, which is
+   the opposite of what it is for. */
+const chromeBox = document.getElementById('chrome');
+const ledgerBox = document.getElementById('ledger');
+
+chromeBox.innerHTML =
+  '<span class="d"></span>' +
+  '<span id="c_mode"></span>' +
+  '<span>GEN <b id="c_gen"></b></span>' +
+  '<span id="c_step"></span>' +
+  '<span>GATED <b id="c_lit"></b>/32</span>' +
+  '<span>LIGHTS <b id="c_lg"></b>/6</span>' +
+  '<span class="warm" id="c_snd"></span>';
+const C = id => document.getElementById(id);
+const cMode = C('c_mode'), cGen = C('c_gen'), cStep = C('c_step'),
+      cLit = C('c_lit'), cLg = C('c_lg'), cSnd = C('c_snd');
+
+ledgerBox.innerHTML =
+  '<div class="hd" id="l_hd"></div>' +
+  CHAIN.map((c, i) =>
+    '<div class="r" id="l_r' + i + '">' +
+      '<span class="src">' + c.src + '</span>' +
+      '<span class="k">' + c.k + '</span>' +
+      '<b id="l_v' + i + '"></b>' +
+      '<span class="bar"><i id="l_b' + i + '"></i></span>' +
+    '</div>').join('');
+const lHd = C('l_hd');
+const lV = CHAIN.map((_, i) => C('l_v' + i));
+const lB = CHAIN.map((_, i) => C('l_b' + i));
+const lR = CHAIN.map((_, i) => C('l_r' + i));
+
+let lastHd = '';
+const lastV = CHAIN.map(() => ''), lastB = CHAIN.map(() => -1);
+let lastChrome = '';
+
+function syncDom() {
+  const m = MODES.find(x => x.id === S.mode), g = GENS.find(x => x.id === S.gen);
+  let lit = 0; for (const s of sensors) if (s.gate) lit++;
+
+  const key = m.id + g.id + S.running + (S.step % 8) + lit + S.lights.length + S.sound;
+  if (key !== lastChrome) {
+    lastChrome = key;
+    cMode.innerHTML = '<b>' + m.name.toUpperCase() + '</b>';
+    cGen.textContent = g.name.toUpperCase();
+    cStep.innerHTML = S.running
+      ? 'STEP <b>' + String(S.step % 8 + 1).padStart(2, '0') + '</b>'
+      : '<span class="warm">STOPPED</span>';
+    cLit.textContent = String(lit).padStart(2, '0');
+    cLg.textContent = String(S.lights.length);
+    cSnd.textContent = !S.sound ? ''
+      : sndState === 'ready'  ? 'TONE: LSe ENGINE RENDER'
+      : sndState === 'failed' ? 'TONE: RENDER NOT LOADED'
+      : 'TONE: LOADING';
+  }
+
+  const s = sensors[S.sel];
+  const hd = 'LDR ' + String(S.sel + 1).padStart(2, '0') +
+             ' \u00b7 ' + ROWS[s.row].sect.toUpperCase() + ' ' + String(s.col + 1).padStart(2, '0') +
+             ' \u00b7 ' + ROWS[s.row].targets[s.col].toUpperCase();
+  if (hd !== lastHd) { lHd.textContent = hd; lastHd = hd; }
+
+  const vals = [s.adc, s.n, s.inv, s.smt, s.exp, s.out];
+  for (let i = 0; i < CHAIN.length; i++) {
+    const v = vals[i], n = Math.max(0, Math.min(1, CHAIN[i].norm(v)));
+    const t = CHAIN[i].fmt(v);
+    if (t !== lastV[i]) { lV[i].textContent = t; lastV[i] = t; }
+    const w = Math.round(n * 44);
+    if (w !== lastB[i]) { lB[i].style.width = w + 'px'; lastB[i] = w; }
+  }
+  lR[5].classList.toggle('gate', s.gate);
+}
+
+/* ---- run / sound / reference ---- */
+const bRun = document.getElementById('bRun');
+const bSnd = document.getElementById('bSnd');
+const bRef = document.getElementById('bRef');
+
+function syncRun() {
+  document.documentElement.style.setProperty('--run', S.running ? '1' : '0');
+}
+bRun.onclick = () => { S.running = !S.running; syncRun(); };
+
+/* ---- SOUND: the LSe engine itself, not a model of it -------------------
+   Every clip under snd/ is a headless render of Kacper's own Pd abstractions
+   out of 01_AUDIO, produced by engine/mkall.py with `pd -nogui -noaudio` and
+   writesf~. Nothing here synthesises anything: the page loops the patch's own
+   DSP output and the light field drives its level, exactly as the light drives
+   gain inside the instrument.
+
+     add  1_SIN_4_ADD        clone x32, fundamental MIDI 24, MUL_FACT 0.55
+     sub  1_BP_FLT_FB_314    32 bands over SAMPLE/STRINGS/STR_SMPL0103.wav
+     grn  1_kac_grain        grain 90 ms, pitchshift -5, window 512
+     lup  1_KAC_stretch      MajStrecz table, same sample
+     png  1_PING_314_CLONE_nodsp x32, captured off the throw~ 1imp bus
+*/
+const SND = { add:'snd/add_55.mp3', sub:'snd/bp.mp3', grn:'snd/grain.mp3',
+              lup:'snd/loop.mp3',   png:'snd/ping.mp3' };
+let ac = null, master = null;
+const buf = {};
+const vox = {};
+let sndState = 'off';        // off | loading | ready | failed
+
+function audio() {
+  if (!ac) {
+    ac = new (window.AudioContext || window.webkitAudioContext)();
+    master = ac.createGain(); master.gain.value = 0.0; master.connect(ac.destination);
+  }
+  if (ac.state === 'suspended') ac.resume();
+  return ac;
+}
+
+async function loadGen(id) {
+  if (buf[id]) return buf[id];
+  const c = audio();
+  const r = await fetch(SND[id]);
+  if (!r.ok) throw new Error(SND[id] + ' ' + r.status);
+  buf[id] = await c.decodeAudioData(await r.arrayBuffer());
+  return buf[id];
+}
+
+/* one looping voice per generator, silent until its generator is selected.
+   A looped render is the honest shape: these patches drone under the light
+   rather than restarting per step. */
+function startVoice(id) {
+  if (vox[id] || !buf[id]) return;
+  const c = audio();
+  const src = c.createBufferSource(), g = c.createGain();
+  src.buffer = buf[id]; src.loop = true;
+  g.gain.value = 0;
+  src.connect(g); g.connect(master); src.start(0);
+  vox[id] = { src, gain: g };
+}
+
+function stopVoices() {
+  for (const id in vox) { try { vox[id].src.stop(); } catch (e) {} delete vox[id]; }
+}
+
+/* the light field IS the level - sum of sensor output over the panel, the same
+   quantity every one of these patches multiplies its own signal by. */
+function sndFrame() {
+  if (sndState !== 'ready' || !S.sound || !ac) return;
+  let sum = 0; for (const s of sensors) sum += s.out;
+  const lvl = Math.min(1, sum / 8);
+  const c = ac.currentTime;
+  for (const id in vox) {
+    const on = (id === S.gen);
+    vox[id].gain.gain.setTargetAtTime(on ? 0.15 + 0.85 * lvl : 0, c, on ? 0.06 : 0.12);
+  }
+}
+
+/* PING is struck, not held: an onset restarts its render from zero so the
+   impulse lands on the step instead of drifting inside a loop. */
+function emitSound() {
+  if (sndState !== 'ready' || !S.sound) return;
+  if (S.gen !== 'png' || !buf.png) return;
+  const c = audio();
+  if (vox.png) { try { vox.png.src.stop(); } catch (e) {} delete vox.png; }
+  const src = c.createBufferSource(), g = c.createGain();
+  src.buffer = buf.png; src.loop = true;
+  // set the level NOW from the light, do not ramp from zero: an onset arrives
+  // every step interval (~144 ms at 104 BPM) and a ramp never gets there.
+  let sum = 0; for (const s of sensors) sum += s.out;
+  g.gain.value = 0.15 + 0.85 * Math.min(1, sum / 8);
+  src.connect(g); g.connect(master); src.start(0);
+  vox.png = { src, gain: g };
+}
+
+async function sndOn() {
+  sndState = 'loading';
+  try {
+    await loadGen(S.gen);
+    startVoice(S.gen);
+    sndState = 'ready';
+    master.gain.setTargetAtTime(0.9, ac.currentTime, 0.05);
+    for (const id in SND) {
+      if (id === S.gen) continue;
+      loadGen(id).then(() => { if (S.sound) startVoice(id); }).catch(() => {});
+    }
+  } catch (e) {
+    sndState = 'failed';
+    console.error('[snd]', e);
+  }
+}
+
+bSnd.onclick = () => {
+  S.sound = !S.sound;
+  bSnd.classList.toggle('off', !S.sound);
+  if (S.sound) sndOn();
+  else { if (master) master.gain.setTargetAtTime(0.0, ac.currentTime, 0.05); stopVoices(); sndState = 'off'; }
+};
+
+/* ---- reference overlay ---- */
+const refEl = document.getElementById('ref');
+function buildRef() {
+  const item = (nm, tag, blurb, files) =>
+    '<div class="it"><div class="nm">' + nm + (tag ? '<i>' + tag + '</i>' : '') + '</div>' +
+    '<div><p>' + blurb + '</p>' + (files ? '<code>' + files.join('  &middot;  ') + '</code>' : '') + '</div></div>';
+
+  let h = '<div class="note">Every function name and filename below is read out of ' +
+          '<b>ctrl-freq666/LSe314</b> and the LSE314 info sheet. The per-sensor targets ' +
+          'inside a row are an <b>example map</b>, not sourced - the real assignment lives in ' +
+          '<b>1_SENS_CHOSE_MAP.pd</b>. The tone is the LSe engine itself: each generator plays a headless ' +
+          '<b>writesf~</b> render of its own abstraction out of <b>01_AUDIO</b>, driven by the light field.</div>';
+
+  h += '<div class="grp"><h2>Sequencer modes</h2>' + MODES.map(m => item(m.name, '', m.blurb, m.files)).join('') + '</div>';
+  h += '<div class="grp"><h2>Generators</h2>' + GENS.map(g => item(g.name, g.tag, g.blurb, g.files)).join('') + '</div>';
+  h += '<div class="grp"><h2>Light-controlled FX</h2>' + FX.map(f => item(f.name, f.full, f.blurb, null)).join('') + '</div>';
+  h += '<div class="grp"><h2>Conditioning chain, per LDR</h2>' +
+       CHAIN.map(c => item(c.k, '', 'Stage ' + (CHAIN.indexOf(c) + 1) + ' of 6.', [c.src])).join('') +
+       '<div class="it"><div class="nm">why invert<i>physics</i></div><div><p>An LDR in a divider reads ' +
+       '<b>high in darkness</b>. The patch normalises the ADC to 0..1 and then flips it, so that ' +
+       'more light means a bigger number. This page models it the same way round.</p></div></div></div>';
+
+  h += '<div class="grp"><h2>Control panel sections</h2>' +
+       ROWS.map(r => item(r.sect, '8 x LDR', 'Example targets: ' + r.targets.join(', ') + '.', null)).join('') + '</div>';
+
+  h += '<div class="grp"><h2>Keys</h2>' +
+       item('1 - 6', '', 'Sequencer mode.', null) +
+       item('Space', '', 'Run / stop the clock.', null) +
+       item('G', '', 'Cycle generator.', null) +
+       item('S', '', 'Engine render on / off.', null) +
+       item('C', '', 'Clear placed lights.', null) +
+       item('R / Esc', '', 'This reference.', null) + '</div>';
+  refEl.querySelector('.inner').innerHTML = h;
+}
+buildRef();
+function toggleRef(on) {
+  refEl.hidden = on === undefined ? !refEl.hidden : !on;
+}
+bRef.onclick = () => toggleRef();
+refEl.querySelector('.close').onclick = () => toggleRef(false);
+
+/* ---- keys ---- */
+addEventListener('keydown', e => {
+  const k = e.key.toLowerCase();
+  if (k === 'escape') { toggleRef(false); return; }
+  if (k === 'r') { toggleRef(); return; }
+  if (e.code === 'Space') { e.preventDefault(); S.running = !S.running; syncRun(); return; }
+  const n = parseInt(k, 10);
+  if (n >= 1 && n <= MODES.length) { setMode(MODES[n-1].id); return; }
+  if (k === 'g') { const i = GENS.findIndex(g => g.id === S.gen); setGen(GENS[(i+1) % GENS.length].id); return; }
+  if (k === 's') { bSnd.click(); return; }
+  if (k === 'c') { S.lights.length = 0; return; }
+});
+
+/* ---- the gate ---- */
+const gateEl = document.getElementById('gate');
+function enter() {
+  if (S.entered) return;
+  S.entered = true;
+  gateEl.classList.add('gone');
+  setTimeout(() => gateEl.remove(), 1400);
+  ['title','panel','chrome','ledger','tools'].forEach(id => document.getElementById(id).classList.add('on'));
+}
+gateEl.addEventListener('click', enter);
+addEventListener('keydown', e => { if (!S.entered && (e.code === 'Space' || e.key === 'Enter')) enter(); });
+
+document.getElementById('stage').addEventListener('pointerleave', () => { S.pointer.inside = false; });
+</script>
